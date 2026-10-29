@@ -1,3 +1,4 @@
+
 <?php
 
 declare(strict_types=1);
@@ -18,7 +19,6 @@ function respond(int $status, array $data): void
     exit;
 }
 
-// Allow GET requests only.
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     header('Allow: GET');
 
@@ -28,7 +28,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     ]);
 }
 
-// Load API configuration and database connection.
 $configPath = __DIR__ . '/config.php';
 
 if (!is_file($configPath)) {
@@ -43,7 +42,10 @@ if (!is_file($configPath)) {
 try {
     $config = require $configPath;
 } catch (Throwable $e) {
-    error_log('CampusConnect API: configuration or database connection failed.');
+    error_log(
+        'CampusConnect API configuration failed: ' .
+        get_class($e) . ': ' . $e->getMessage()
+    );
 
     respond(500, [
         'status' => 'error',
@@ -64,7 +66,6 @@ if (
     ]);
 }
 
-// Authenticate the client using a Bearer Token.
 $authorization = $_SERVER['HTTP_AUTHORIZATION']
     ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
     ?? '';
@@ -83,8 +84,6 @@ if (
 
 try {
     $pdo = $config['pdo'];
-
-    // Optional student lookup by 10-digit student number.
     $studentNumber = $_GET['student_number'] ?? null;
 
     if ($studentNumber !== null) {
@@ -108,7 +107,7 @@ try {
                     section
                 FROM api_students
                 WHERE student_number = :student_number
-                  AND is_active = 1
+                  AND is_active IS TRUE
                 LIMIT 1';
 
         $stmt = $pdo->prepare($sql);
@@ -117,7 +116,7 @@ try {
             'student_number' => $studentNumber
         ]);
 
-        $student = $stmt->fetch(PDO::FETCH_ASSOC);
+        $student = $stmt->fetch();
 
         if (!$student) {
             respond(404, [
@@ -132,7 +131,6 @@ try {
         ]);
     }
 
-    // Return active student records only.
     $sql = 'SELECT
                 student_number,
                 full_name,
@@ -142,7 +140,7 @@ try {
                 year_level,
                 section
             FROM api_students
-            WHERE is_active = 1
+            WHERE is_active IS TRUE
             ORDER BY student_number ASC
             LIMIT 100';
 
@@ -150,14 +148,17 @@ try {
 
     respond(200, [
         'status' => 'success',
-        'data' => $stmt->fetchAll(PDO::FETCH_ASSOC),
+        'data' => $stmt->fetchAll(),
         'pagination' => [
             'per_page' => 100
         ]
     ]);
 
 } catch (Throwable $e) {
-    error_log('CampusConnect API: student retrieval failed.');
+    error_log(
+        'CampusConnect API student retrieval failed: ' .
+        get_class($e) . ': ' . $e->getMessage()
+    );
 
     respond(500, [
         'status' => 'error',
