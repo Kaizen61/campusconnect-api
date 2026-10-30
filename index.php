@@ -1,3 +1,4 @@
+
 <?php
 
 declare(strict_types=1);
@@ -27,65 +28,80 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     ]);
 }
 
-$configPath = __DIR__ . '/config.php';
-
-if (!is_file($configPath)) {
-    error_log('CampusConnect API: config.php is missing.');
-
-    respond(500, [
-        'status' => 'error',
-        'message' => 'API configuration is unavailable.'
-    ]);
-}
-
 try {
+    $configPath = __DIR__ . '/config.php';
+
+    if (!is_file($configPath)) {
+        respond(500, [
+            'status' => 'error',
+            'message' => 'API configuration is unavailable.'
+        ]);
+    }
+
     $config = require $configPath;
-} catch (Throwable $e) {
-    error_log(
-        'CampusConnect API configuration failed: ' .
-        get_class($e) . ': ' . $e->getMessage()
+
+    if (
+        !is_array($config) ||
+        !isset($config['api_token'], $config['pdo']) ||
+        !is_string($config['api_token']) ||
+        !($config['pdo'] instanceof PDO)
+    ) {
+        respond(500, [
+            'status' => 'error',
+            'message' => 'API configuration is invalid.'
+        ]);
+    }
+
+    // Authenticate API request.
+    $authorization = $_SERVER['HTTP_AUTHORIZATION']
+        ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+        ?? '';
+
+    if (
+        !preg_match('/^Bearer\s+(\S+)$/i', $authorization, $matches) ||
+        !hash_equals($config['api_token'], $matches[1])
+    ) {
+        header('WWW-Authenticate: Bearer');
+
+        respond(401, [
+            'status' => 'error',
+            'message' => 'Unauthorized.'
+        ]);
+    }
+
+    $pdo = $config['pdo'];
+
+    // Identify the requested endpoint.
+    $requestPath = parse_url(
+        $_SERVER['REQUEST_URI'] ?? '/',
+        PHP_URL_PATH
     );
 
-    respond(500, [
-        'status' => 'error',
-        'message' => 'API configuration could not be loaded.'
-    ]);
-}
+    $basePath = '/api/v1/students';
 
-if (
-    !is_array($config) ||
-    !isset($config['api_token'], $config['pdo']) ||
-    !is_string($config['api_token']) ||
-    $config['api_token'] === '' ||
-    !($config['pdo'] instanceof PDO)
-) {
-    respond(500, [
-        'status' => 'error',
-        'message' => 'API configuration is invalid.'
-    ]);
-}
+    if ($requestPath === $basePath) {
+        $studentNumber = null;
+    } elseif (preg_match(
+        '#^/api/v1/students/([^/]+)/?$#',
+        $requestPath,
+        $matches
+    )) {
+        $studentNumber = $matches[1];
+    } else {
+        // Also support ?student_number=...
+        $studentNumber = $_GET['student_number'] ?? null;
 
-$authorization = $_SERVER['HTTP_AUTHORIZATION']
-    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
-    ?? '';
+        if ($studentNumber === null) {
+            respond(404, [
+                'status' => 'error',
+                'message' => 'API endpoint not found.'
+            ]);
+        }
+    }
 
-if (
-    !preg_match('/^Bearer\s+(\S+)$/i', $authorization, $matches) ||
-    !hash_equals($config['api_token'], $matches[1])
-) {
-    header('WWW-Authenticate: Bearer');
-
-    respond(401, [
-        'status' => 'error',
-        'message' => 'Unauthorized.'
-    ]);
-}
-
-try {
-    $pdo = $config['pdo'];
-    $studentNumber = $_GET['student_number'] ?? null;
-
+    // Retrieve one student.
     if ($studentNumber !== null) {
+
         if (
             !is_string($studentNumber) ||
             !preg_match('/^[0-9]{10}$/', $studentNumber)
@@ -130,6 +146,7 @@ try {
         ]);
     }
 
+    // Retrieve all active students.
     $sql = 'SELECT
                 student_number,
                 full_name,
