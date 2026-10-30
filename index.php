@@ -18,6 +18,7 @@ function respond(int $status, array $data): void
     exit;
 }
 
+// Only allow GET requests.
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     header('Allow: GET');
 
@@ -27,47 +28,79 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     ]);
 }
 
+// Load API configuration.
+$configPath = __DIR__ . '/config.php';
+
+if (!is_file($configPath)) {
+    error_log('CampusConnect API: config.php is missing.');
+
+    respond(500, [
+        'status' => 'error',
+        'message' => 'API configuration is unavailable.'
+    ]);
+}
+
 try {
-    $configPath = __DIR__ . '/config.php';
-
-    if (!is_file($configPath)) {
-        respond(500, [
-            'status' => 'error',
-            'message' => 'API configuration is unavailable.'
-        ]);
-    }
-
     $config = require $configPath;
+} catch (Throwable $e) {
+    error_log('CampusConnect API configuration failed: ' . $e->getMessage());
 
-    if (
-        !is_array($config) ||
-        !isset($config['api_token'], $config['pdo']) ||
-        !is_string($config['api_token']) ||
-        !($config['pdo'] instanceof PDO)
-    ) {
-        respond(500, [
-            'status' => 'error',
-            'message' => 'API configuration is invalid.'
-        ]);
-    }
+    respond(500, [
+        'status' => 'error',
+        'message' => 'API configuration could not be loaded.'
+    ]);
+}
 
-    // Authenticate API request.
-    $authorization = $_SERVER['HTTP_AUTHORIZATION']
-        ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
-        ?? '';
+// Validate configuration.
+if (
+    !is_array($config) ||
+    !isset($config['api_token'], $config['pdo']) ||
+    !is_string($config['api_token']) ||
+    !($config['pdo'] instanceof PDO)
+) {
+    respond(500, [
+        'status' => 'error',
+        'message' => 'API configuration is invalid.'
+    ]);
+}
 
-    if (
-        !preg_match('/^Bearer\s+(\S+)$/i', $authorization, $matches) ||
-        !hash_equals($config['api_token'], $matches[1])
-    ) {
-        header('WWW-Authenticate: Bearer');
+// Read the original API key and the separate access token.
+$apiToken = $config['api_token'];
+$accessToken = getenv('ACCESS_TOKEN') ?: '';
 
-        respond(401, [
-            'status' => 'error',
-            'message' => 'Unauthorized.'
-        ]);
-    }
+// Get Bearer token from Authorization header.
+$authorization = $_SERVER['HTTP_AUTHORIZATION']
+    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+    ?? '';
 
+if (
+    !preg_match('/^Bearer\s+(\S+)$/i', $authorization, $matches)
+) {
+    header('WWW-Authenticate: Bearer');
+
+    respond(401, [
+        'status' => 'error',
+        'message' => 'Bearer access token is required.'
+    ]);
+}
+
+$providedToken = $matches[1];
+
+// Accept either the original API key or the new access token.
+$validApiKey = hash_equals($apiToken, $providedToken);
+
+$validAccessToken = $accessToken !== ''
+    && hash_equals($accessToken, $providedToken);
+
+if (!$validApiKey && !$validAccessToken) {
+    respond(401, [
+        'status' => 'error',
+        'message' => 'Invalid access token.'
+    ]);
+}
+
+// Retrieve student records.
+try {
     $pdo = $config['pdo'];
 
     // Identify the requested endpoint.
@@ -78,24 +111,19 @@ try {
 
     $basePath = '/api/v1/students';
 
-    if ($requestPath === $basePath) {
-        $studentNumber = null;
+    if ($requestPath === $basePath || $requestPath === $basePath . '/') {
+        $studentNumber = $_GET['student_number'] ?? null;
     } elseif (preg_match(
         '#^/api/v1/students/([^/]+)/?$#',
         $requestPath,
-        $matches
+        $pathMatches
     )) {
-        $studentNumber = $matches[1];
+        $studentNumber = $pathMatches[1];
     } else {
-        // Also support ?student_number=...
-        $studentNumber = $_GET['student_number'] ?? null;
-
-        if ($studentNumber === null) {
-            respond(404, [
-                'status' => 'error',
-                'message' => 'API endpoint not found.'
-            ]);
-        }
+        respond(404, [
+            'status' => 'error',
+            'message' => 'API endpoint not found.'
+        ]);
     }
 
     // Retrieve one student.
